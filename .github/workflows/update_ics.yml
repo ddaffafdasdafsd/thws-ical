@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ics-update
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   generate:
@@ -19,8 +19,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Python setup
         uses: actions/setup-python@v5
@@ -43,6 +41,4 @@ jobs:
           git add ical/
           git diff --cached --quiet && echo "Keine Änderungen" && exit 0
           git commit -m "update ICS [$(date -u '+%Y-%m-%d %H:%M UTC')]"
-          git fetch origin main
-          git rebase origin/main
-          git push
+          git push --force

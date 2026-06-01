@@ -16,8 +16,6 @@ HEADERS = {
     "Content-Type":  "application/json",
 }
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def decompress(events_gz: str) -> list:
     if not events_gz:
         return []
@@ -33,17 +31,20 @@ def decompress(events_gz: str) -> list:
         return []
 
 def unescape_html(s: str) -> str:
-    return (s or "").replace("&amp;","&").replace("&lt;","<").replace("&gt;",">") \
-                    .replace("&quot;",'"').replace("&#39;","'")
+    return (s or "").replace("&amp;","&").replace("&lt;","<")\
+                    .replace("&gt;",">").replace("&quot;",'"').replace("&#39;","'")
 
 def ics_escape(s: str) -> str:
     s = unescape_html(s)
     return s.replace("\\","\\\\").replace(",","\\,").replace(";","\\;").replace("\n","\\n")
 
 def to_ics_dt(date_str: str, time_str: str) -> str:
-    d = (date_str or "").split("T")[0].replace("-", "")   # YYYYMMDD
-    t = (time_str or "").replace(":", "")[:4]              # HHMM
-    return f"{d}T{t}00"
+    """Wandelt Datum + Zeit in ICS-Format. Behandelt '8:15' und '08:15' korrekt."""
+    d = (date_str or "").split("T")[0].replace("-", "")  # YYYYMMDD
+    parts = (time_str or "0:00").split(":")
+    hh = parts[0].strip().zfill(2)   # "8" → "08", "08" → "08"
+    mm = (parts[1].strip() if len(parts) > 1 else "00").zfill(2)
+    return f"{d}T{hh}{mm}00"
 
 def fold_line(line: str) -> str:
     if len(line) <= 75:
@@ -56,15 +57,12 @@ def fold_line(line: str) -> str:
     return "\r\n".join(parts)
 
 def matches_filter(gruppe: str, ev_name: str, faecher_filter: list) -> bool:
-    """Identische Logik wie app.py / Edge Function."""
     if not faecher_filter:
         return True
     name = unescape_html(ev_name or "")
     for key in faecher_filter:
         parts = key.split("::")
-        if len(parts) < 2:
-            continue
-        if parts[0].strip() == gruppe and parts[1].strip() == name:
+        if len(parts) >= 2 and parts[0].strip() == gruppe and parts[1].strip() == name:
             return True
     return False
 
@@ -94,50 +92,55 @@ def build_ics(events: list, label: str) -> str:
 
     for ev in events:
         date   = str(ev.get("date")  or "")
-        start  = str(ev.get("start") or "08:00")
-        end    = str(ev.get("ende")  or ev.get("end") or "09:30")
+        start  = str(ev.get("start") or "0:00")
+        end    = str(ev.get("ende")  or ev.get("end") or "")
         name   = unescape_html(str(ev.get("name")  or "Veranstaltung"))
         room   = unescape_html(str(ev.get("room")  or ""))
         prof   = unescape_html(str(ev.get("prof")  or ""))
         status = str(ev.get("status") or "normal").lower()
         gruppe = str(ev.get("_gruppe") or ev.get("group") or "")
 
-        if not date:
+        if not date or not end:
+            continue
+
+        # Validierung: Datum und Zeit müssen sinnvoll sein
+        dtstart = to_ics_dt(date, start)
+        dtend   = to_ics_dt(date, end)
+
+        if len(dtstart) != 15 or len(dtend) != 15:
+            print(f"  ⚠ Ungültige Zeit übersprungen: {name} {date} {start}-{end}")
             continue
 
         cancelled = status in ("entfall", "cancelled")
-        summary   = f"❌ {name}" if cancelled else name
-        uid       = f"{date[:10]}-{start}-{name.replace(' ','-')}-{gruppe}@thws-ical"
+        summary   = f"ENTFALL: {name}" if cancelled else name
+        uid       = f"{date[:10]}-{start}-{name[:30].replace(' ','-')}-{gruppe}@thws-ical"
 
         desc_parts = []
         if prof:      desc_parts.append(f"Dozent: {prof}")
         if gruppe:    desc_parts.append(f"Gruppe: {gruppe}")
-        if cancelled: desc_parts.append("⚠️ Entfall")
-        if status == "online": desc_parts.append("🖥️ Online")
-        if status == "tutor":  desc_parts.append("📚 Tutorium")
+        if cancelled: desc_parts.append("Entfall / Abgesagt")
+        if status == "online": desc_parts.append("Online-Veranstaltung")
+        if status == "tutor":  desc_parts.append("Tutorium")
 
         lines += [
             "BEGIN:VEVENT",
             f"UID:{uid}",
             f"DTSTAMP:{now}",
-            f"DTSTART;TZID=Europe/Berlin:{to_ics_dt(date, start)}",
-            f"DTEND;TZID=Europe/Berlin:{to_ics_dt(date, end)}",
+            f"DTSTART;TZID=Europe/Berlin:{dtstart}",
+            f"DTEND;TZID=Europe/Berlin:{dtend}",
             f"SUMMARY:{ics_escape(summary)}",
             f"STATUS:{'CANCELLED' if cancelled else 'CONFIRMED'}",
         ]
-        if room:             lines.append(f"LOCATION:{ics_escape(room)}")
-        if desc_parts:       lines.append(f"DESCRIPTION:{chr(92)+'n'.join(desc_parts)}")
+        if room:           lines.append(f"LOCATION:{ics_escape(room)}")
+        if desc_parts:     lines.append(f"DESCRIPTION:{chr(92)+'n'.join(desc_parts)}")
         lines.append("END:VEVENT")
 
     lines.append("END:VCALENDAR")
     return "\r\n".join(fold_line(l) for l in lines) + "\r\n"
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     print(f"=== THWS ICS Generator — {datetime.now(timezone.utc).isoformat()} ===")
 
-    # 1. Alle Abos laden
     r = requests.get(f"{SUPABASE_URL}/rest/v1/ics_subscriptions?select=*",
                      headers=HEADERS, timeout=15)
     subs = r.json() if r.status_code == 200 else []
@@ -146,16 +149,13 @@ def main():
         print("Keine Abos — fertig.")
         return
 
-    # 2. Alle benötigten Gruppen bestimmen
     alle_gruppen = set()
     for s in subs:
         for g in (s.get("gruppen") or "").split(","):
             g = g.strip()
-            if g:
-                alle_gruppen.add(g)
+            if g: alle_gruppen.add(g)
 
-    # 3. Global Cache laden
-    cache: dict[str, list] = {}
+    cache: dict = {}
     for gruppe in alle_gruppen:
         r2 = requests.get(
             f"{SUPABASE_URL}/rest/v1/global_stundenplan_cache"
@@ -164,16 +164,18 @@ def main():
         if r2.status_code == 200 and r2.json():
             events = decompress(r2.json()[0].get("events_gz", ""))
             cache[gruppe] = events
-            print(f"  Cache {gruppe}: {len(events)} Events")
+            # Debug: erste Event ausgeben
+            if events:
+                ev = events[0]
+                print(f"  Cache {gruppe}: {len(events)} Events, Beispiel: {ev.get('name')} {ev.get('date')} {ev.get('start')}-{ev.get('ende')}")
 
-    # 4. Für jedes Abo eine .ics Datei generieren
     OUTPUT_DIR.mkdir(exist_ok=True)
     now_iso = datetime.now(timezone.utc).isoformat()
     updated = []
 
     for sub in subs:
-        token  = sub.get("token", "")
-        label  = sub.get("label") or "THWS Stundenplan"
+        token   = sub.get("token", "")
+        label   = sub.get("label") or "THWS Stundenplan"
         gruppen = [g.strip() for g in (sub.get("gruppen") or "").split(",") if g.strip()]
         faecher_filter = []
         try:
@@ -184,7 +186,6 @@ def main():
         if not token or not gruppen:
             continue
 
-        # Events sammeln + filtern
         all_events: list = []
         seen: set        = set()
         for gruppe in gruppen:
@@ -203,7 +204,6 @@ def main():
         print(f"  ✓ {token[:12]}…  {len(all_events)} Events  ({', '.join(gruppen)})")
         updated.append(token)
 
-    # 5. last_generated updaten
     for token in updated:
         requests.patch(
             f"{SUPABASE_URL}/rest/v1/ics_subscriptions?token=eq.{token}",
@@ -214,4 +214,4 @@ def main():
     print(f"\n✅ Fertig — {len(updated)} ICS-Dateien generiert.")
 
 if __name__ == "__main__":
-    main() 
+    main()

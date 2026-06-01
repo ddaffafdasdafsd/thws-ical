@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ics-update
+  cancel-in-progress: false
+
 jobs:
   generate:
     runs-on: ubuntu-latest
@@ -36,8 +40,8 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
           git add ical/
           git diff --cached --quiet && echo "Keine Änderungen" && exit 0
-          git pull --rebase origin main
           git commit -m "update ICS [$(date -u '+%Y-%m-%d %H:%M UTC')]"
           git push

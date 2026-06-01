@@ -1,0 +1,42 @@
+name: Update ICS Files
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # jede volle Stunde
+  workflow_dispatch:        # manuell auslösbar
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Python setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Generate ICS
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python generate_ics.py
+
+      - name: Commit & Push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ical/
+          git diff --cached --quiet || git commit -m "update ICS [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+          git push

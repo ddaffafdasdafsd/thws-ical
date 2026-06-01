@@ -40,8 +40,9 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
           git add ical/
           git diff --cached --quiet && echo "Keine Änderungen" && exit 0
           git commit -m "update ICS [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+          git fetch origin main
+          git rebase origin/main
           git push
